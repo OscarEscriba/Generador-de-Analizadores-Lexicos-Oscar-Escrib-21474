@@ -31,72 +31,25 @@ class YalexParser:
         return re.sub(r'\(\*.*?\*\)', '', content, flags=re.DOTALL)
 
     def _extract_sections(self, content: str) -> None:
-        try:
-            header_match = re.search(r'\{([^}]*)\}', content)
-            trailer_match = re.search(r'\}\s*\{([^}]*)\}', content)
-            
-            self.header = header_match.group(1).strip() if header_match else ""
-            self.trailer = trailer_match.group(1).strip() if trailer_match else ""
-        except Exception as e:
-            print("Error extrayendo secciones:", str(e), file=sys.stderr)
-            raise
+        header_match = re.search(r'\{([^}]*)\}', content)
+        trailer_match = re.search(r'\}\s*\{([^}]*)\}', content)
+        
+        self.header = header_match.group(1).strip() if header_match else ""
+        self.trailer = trailer_match.group(1).strip() if trailer_match else ""
 
     def _extract_definitions(self, content: str) -> None:
-        try:
-            for match in re.finditer(r'let\s+(\w+)\s*=\s*([^;]+?)\s*(?=let\s|rule\s|\})', content, re.DOTALL):
-                name, regex = match.groups()
-                normalized = self._normalize_regex(regex.strip())
-                if self.debug:
-                    print(f"[DEBUG] Definición: {name} = {normalized}")
-                self.definitions[name.strip()] = normalized
-        except Exception as e:
-            print("Error procesando definiciones:", str(e), file=sys.stderr)
-            raise
-
-    def _extract_rules(self, content: str) -> None:
-        try:
-            rule_match = re.search(r'rule\s+tokens\s*=\s*\|?(.*?)(?=\s*\{[^}]*\}\s*$)', content, re.DOTALL)
-            if not rule_match:
-                raise ValueError("No se encontró la sección 'rule tokens'")
-            
-            for line in rule_match.group(1).split('|'):
-                line = line.strip()
-                if not line:
-                    continue
-                    
-                if '{' in line:
-                    parts = re.split(r'\s*\{', line, maxsplit=1)
-                    pattern = parts[0].strip()
-                    action = parts[1].replace('}', '').replace('return', '').strip()
-                else:
-                    pattern = line.strip()
-                    action = 'None'
-                
-                expanded = self._expand_pattern(pattern)
-                
-                if self.debug:
-                    print(f"[DEBUG] Regla: {pattern} -> {expanded} | Acción: {action}")
-                
-                self.rules.append({
-                    'original': pattern,
-                    'pattern': expanded,
-                    'action': f"'{action}'" if action != 'None' else action
-                })
-        except Exception as e:
-            print("Error procesando reglas:", str(e), file=sys.stderr)
-            raise
+        def_matches = re.finditer(r'let\s+(\w+)\s*=\s*([^;]+?)\s*(?=let\s|rule\s|\})', content, re.DOTALL)
+        for match in def_matches:
+            name, regex = match.groups()
+            normalized = self._normalize_regex(regex.strip())
+            self.definitions[name.strip()] = normalized
 
     def _normalize_regex(self, regex: str) -> str:
-        try:
-            regex = regex.replace(r'\s', r'[ \t\n]')
-            regex = regex.replace(r'\t', r'\t')
-            regex = regex.replace(r'\n', r'\n')
-            regex = re.sub(r'\[([^\]]+)\]', self._expand_character_class, regex)
-            regex = re.sub(r"'([^']*)'", r'\1', regex)
-            return regex
-        except Exception as e:
-            print(f"Error normalizando regex '{regex}': {str(e)}", file=sys.stderr)
-            raise
+        regex = regex.replace(r"'\t'", r'\t')
+        regex = regex.replace(r"'\n'", r'\n')
+        regex = regex.replace(r"' '", ' ')
+        regex = re.sub(r'\[([^\]]+)\]', self._expand_character_class, regex)
+        return regex.replace("'", "")
 
     def _expand_character_class(self, match: re.Match) -> str:
         chars = match.group(1)
@@ -105,46 +58,69 @@ class YalexParser:
         while i < len(chars):
             if i+2 < len(chars) and chars[i+1] == '-':
                 start, end = chars[i], chars[i+2]
-                if ord(start) > ord(end):
-                    raise ValueError(f"Rango inválido: {start}-{end}")
-                elements.extend([chr(c) for c in range(ord(start), ord(end)+1)])
+                elements.append(f"{start}-{end}")
                 i += 3
             else:
-                elements.append(chars[i])
+                if chars[i] not in ["'", " "]:
+                    elements.append(chars[i])
                 i += 1
-        return f"({'|'.join(map(re.escape, elements))})"
+        return f"[{''.join(elements)}]"
+
+    def _extract_rules(self, content: str) -> None:
+        rule_match = re.search(r'rule\s+tokens\s*=\s*\|?(.*?)(?=\s*\{[^}]*\}\s*$)', content, re.DOTALL)
+        if not rule_match:
+            raise ValueError("No se encontró la sección 'rule tokens'")
+        
+        for line in rule_match.group(1).split('|'):
+            line = line.strip()
+            if not line:
+                continue
+                
+            action = 'None'
+            if '{' in line:
+                parts = re.split(r'\s*\{', line, maxsplit=1)
+                pattern = parts[0].strip()
+                action = parts[1].split('}')[0].replace('return', '').strip()
+            else:
+                pattern = line.strip()
+            
+            expanded = self._expand_pattern(pattern)
+            self.rules.append({
+                'original': pattern,
+                'pattern': expanded,
+                'action': action if action != 'None' else None
+            })
 
     def _expand_pattern(self, pattern: str) -> str:
-        try:
-            for name, regex in self.definitions.items():
-                pattern = pattern.replace(name, regex)
-            
-            special_chars = r'\+*?|()[]{}^$.'
-            for char in special_chars:
+        # Reemplazar definiciones recursivamente
+        for name in reversed(self.definitions):
+            pattern = pattern.replace(name, self.definitions[name])
+        
+        # Escapar caracteres especiales excepto dentro de []
+        special_chars = r'\+*?|(){}^$.'
+        for char in special_chars:
+            if char not in ['[', ']']:
                 pattern = pattern.replace(char, f'\\{char}')
-                
-            return pattern
-        except Exception as e:
-            print(f"Error expandiendo patrón '{pattern}': {str(e)}", file=sys.stderr)
-            raise
+        
+        # Añadir anclaje si no está presente
+        if not pattern.startswith('^'):
+            pattern = '^' + pattern
+        
+        return pattern
 
     def generate_lexer(self, output_file: str = 'lexer.py') -> None:
         if not self.rules:
             raise ValueError("No hay reglas para generar el lexer")
         
-        try:
-            ordered_rules = sorted(self.rules, key=lambda x: len(x['pattern']))
-            rules_code = self._generate_rule_definitions(ordered_rules)
-            
-            lexer_code = self._generate_lexer_code(rules_code)
-            
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(lexer_code)
-            print(f"Lexer generado exitosamente en {output_file}")
-            
-        except Exception as e:
-            print(f"Error generando lexer: {str(e)}", file=sys.stderr)
-            raise
+        # Ordenar reglas por longitud descendente
+        ordered_rules = sorted(self.rules, key=lambda x: len(x['pattern']), reverse=True)
+        rules_code = self._generate_rule_definitions(ordered_rules)
+        
+        lexer_code = self._generate_lexer_code(rules_code)
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(lexer_code)
+        print(f"Lexer generado exitosamente en {output_file}")
 
     def _generate_rule_definitions(self, rules: List[Dict[str, str]]) -> str:
         rule_lines = []
@@ -154,14 +130,12 @@ class YalexParser:
             
             try:
                 re.compile(pattern)
-                rule_lines.append(f"            (r'{pattern}', {action})")
-            except re.error:
-                print(f"[WARN] Patrón inválido: {pattern}", file=sys.stderr)
-                continue
-                
-        if not rule_lines:
-            raise ValueError("No se generaron reglas válidas")
-            
+                if action:
+                    rule_lines.append(f"            (r'{pattern}', '{action}')")
+                else:
+                    rule_lines.append(f"            (r'{pattern}', None)")
+            except re.error as e:
+                print(f"[WARN] Patrón inválido: {pattern} - {e}", file=sys.stderr)
         return ',\n'.join(rule_lines)
 
     def _generate_lexer_code(self, rules_code: str) -> str:
@@ -190,14 +164,16 @@ class Lexer:
             if self.pos >= len(self.text):
                 break
                 
-            token = self._match_next_token()
-            if token:
-                tokens.append(token)
-            else:
+            match = self._match_next_token()
+            if not match:
                 self._report_lexical_error()
+                break
+            token_type, value = match
+            if token_type:
+                tokens.append((token_type, value))
         return tokens
 
-    def _skip_whitespace(self) -> None:
+    def _skip_whitespace(self):
         while self.pos < len(self.text) and self.text[self.pos].isspace():
             if self.text[self.pos] == '\\n':
                 self.line += 1
@@ -207,16 +183,14 @@ class Lexer:
             self.pos += 1
 
     def _match_next_token(self) -> Optional[Tuple[str, str]]:
+        remaining_text = self.text[self.pos:]
         for pattern, action in self.rules:
-            try:
-                match = re.match(pattern, self.text[self.pos:])
-                if match:
-                    value = match.group()
-                    self.pos += len(value)
-                    self.column += len(value)
-                    return (action.strip(\"'\"), value) if action != 'None' else None
-            except re.error as e:
-                raise ValueError(f"Error en regex '{pattern}': {str(e)}")
+            match = re.match(pattern, remaining_text)
+            if match:
+                value = match.group(0)
+                self.pos += len(value)
+                self.column += len(value)
+                return (action, value) if action else (None, value)
         return None
 
     def _report_lexical_error(self):
@@ -241,7 +215,7 @@ if __name__ == '__main__':
         
         lexer = Lexer(text)
         for token in lexer.tokenize():
-            if token:  # Ignorar tokens None (como whitespace)
+            if token[0]:  # Ignorar tokens None (como whitespace)
                 print(token)
     except Exception as e:
         print(f"Error: {{str(e)}}", file=sys.stderr)

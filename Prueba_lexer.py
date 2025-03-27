@@ -1,4 +1,4 @@
-from lexer import Lexer
+from thelexer import Lexer
  
 
 def main():
