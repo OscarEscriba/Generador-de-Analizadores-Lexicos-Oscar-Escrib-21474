@@ -42,14 +42,25 @@ class YalexParser:
         for match in def_matches:
             name, regex = match.groups()
             normalized = self._normalize_regex(regex.strip())
+            print("[DEBUG] Definiciones extraídas:", self.definitions)
             self.definitions[name.strip()] = normalized
 
     def _normalize_regex(self, regex: str) -> str:
+        # Manejar secuencias de escape y literales
         regex = regex.replace(r"'\t'", r'\t')
         regex = regex.replace(r"'\n'", r'\n')
         regex = regex.replace(r"' '", ' ')
+        
+        # Manejar clases de caracteres
         regex = re.sub(r'\[([^\]]+)\]', self._expand_character_class, regex)
-        return regex.replace("'", "")
+        
+        # Manejar operadores como +, *, |
+        regex = regex.replace('+', '*')
+        
+        # Eliminar comillas extras
+        regex = regex.replace("'", "")
+        
+        return regex
 
     def _expand_character_class(self, match: re.Match) -> str:
         chars = match.group(1)
@@ -61,8 +72,8 @@ class YalexParser:
                 elements.append(f"{start}-{end}")
                 i += 3
             else:
-                if chars[i] not in ["'", " "]:
-                    elements.append(chars[i])
+                if chars[i] not in [' ']:
+                    elements.append(re.escape(chars[i]))
                 i += 1
         return f"[{''.join(elements)}]"
 
@@ -90,19 +101,23 @@ class YalexParser:
                 'pattern': expanded,
                 'action': action if action != 'None' else None
             })
+            print("[DEBUG] Reglas extraídas:", self.rules)
+
 
     def _expand_pattern(self, pattern: str) -> str:
-        # Reemplazar definiciones recursivamente
-        for name in reversed(self.definitions):
-            pattern = pattern.replace(name, self.definitions[name])
+        # Manejar definiciones
+        definitions_copy = self.definitions.copy()
         
-        # Escapar caracteres especiales excepto dentro de []
-        special_chars = r'\+*?|(){}^$.'
-        for char in special_chars:
-            if char not in ['[', ']']:
-                pattern = pattern.replace(char, f'\\{char}')
+        # Reemplazar definiciones
+        for name, value in sorted(definitions_copy.items(), key=lambda x: len(x[0]), reverse=True):
+            if name in pattern:
+                pattern = pattern.replace(name, f"({value})")
         
-        # Añadir anclaje si no está presente
+        # Manejar literales y caracteres especiales
+        if pattern.startswith("'") and pattern.endswith("'"):
+            pattern = re.escape(pattern.strip("'"))
+        
+        # Agregar anclaje si no está presente
         if not pattern.startswith('^'):
             pattern = '^' + pattern
         
@@ -129,13 +144,18 @@ class YalexParser:
             action = rule['action']
             
             try:
+                # Validar el patrón de regex
                 re.compile(pattern)
+                
+                # Generar línea de regla
                 if action:
                     rule_lines.append(f"            (r'{pattern}', '{action}')")
                 else:
+                    # Para reglas sin acción (como espacios en blanco)
                     rule_lines.append(f"            (r'{pattern}', None)")
             except re.error as e:
                 print(f"[WARN] Patrón inválido: {pattern} - {e}", file=sys.stderr)
+        
         return ',\n'.join(rule_lines)
 
     def _generate_lexer_code(self, rules_code: str) -> str:

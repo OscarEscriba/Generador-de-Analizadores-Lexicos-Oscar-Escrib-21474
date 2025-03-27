@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-return ID
+# Lexer generado automáticamente - NO MODIFICAR DIRECTAMENTE
 
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 class Lexer:
     def __init__(self, text: str):
@@ -12,10 +12,12 @@ class Lexer:
         self.column = 1
         self.rules = [
             # (patrón, acción)
-            (r'^'\+'', 'PLUS'),
-            (r'^'\*'', 'TIMES'),
-            (r'^'\('', 'LPAREN'),
-            (r'^letter\(letter|digit\)\*', 'ID')
+            (r'^(letter(letter|digit)*)', 'ID'),
+            (r'^(delim*)', None),
+            (r'^\+', 'PLUS'),
+            (r'^\*', 'TIMES'),
+            (r'^\(', 'LPAREN'),
+            (r'^\)', None)
         ]
     
     def tokenize(self) -> List[Tuple[str, str]]:
@@ -25,19 +27,16 @@ class Lexer:
             if self.pos >= len(self.text):
                 break
                 
-            token = self._match_next_token()
-            if token:
-                tokens.append(token)
-            else:
-                context = self.text[max(0, self.pos-5):self.pos+5]
-                raise SyntaxError(
-                    f"Error léxico en línea {self.line}, columna {self.column}\n"
-                    f"Contexto: '...{context}...'\n"
-                    f"Carácter no reconocido: '{self.text[self.pos]}'"
-                )
+            match = self._match_next_token()
+            if not match:
+                self._report_lexical_error()
+                break
+            token_type, value = match
+            if token_type:
+                tokens.append((token_type, value))
         return tokens
 
-    def _skip_whitespace(self) -> None:
+    def _skip_whitespace(self):
         while self.pos < len(self.text) and self.text[self.pos].isspace():
             if self.text[self.pos] == '\n':
                 self.line += 1
@@ -46,30 +45,41 @@ class Lexer:
                 self.column += 1
             self.pos += 1
 
-    def _match_next_token(self):
+    def _match_next_token(self) -> Optional[Tuple[str, str]]:
+        remaining_text = self.text[self.pos:]
         for pattern, action in self.rules:
-            match = re.match(pattern, self.text[self.pos:])
+            match = re.match(pattern, remaining_text)
             if match:
-                value = match.group()
-                self.column += len(value)
+                value = match.group(0)
                 self.pos += len(value)
-                return (action, value)
+                self.column += len(value)
+                return (action, value) if action else (None, value)
         return None
+
+    def _report_lexical_error(self):
+        context = self.text[max(0, self.pos-5):self.pos+5]
+        raise SyntaxError(
+            f"Error léxico en línea {self.line}, columna {self.column}\n"
+            f"Contexto: '...{context}...'\n"
+            f"Carácter no reconocido: '{self.text[self.pos]}'"
+        )
 
 
 
 if __name__ == '__main__':
     import sys
     if len(sys.argv) < 2:
-        print("Uso: python lexer.py <archivo_entrada>")
+        print("Uso: python lexer.py <archivo_entrada>", file=sys.stderr)
         sys.exit(1)
     
-    with open(sys.argv[1], 'r', encoding='utf-8') as f:
-        text = f.read()
-    
-    lexer = Lexer(text)
     try:
+        with open(sys.argv[1], 'r', encoding='utf-8') as f:
+            text = f.read()
+        
+        lexer = Lexer(text)
         for token in lexer.tokenize():
-            print(token)
-    except SyntaxError as e:
-        print(f"Error léxico: {e}")
+            if token[0]:  # Ignorar tokens None (como whitespace)
+                print(token)
+    except Exception as e:
+        print(f"Error: {str(e)}", file=sys.stderr)
+        sys.exit(1)
