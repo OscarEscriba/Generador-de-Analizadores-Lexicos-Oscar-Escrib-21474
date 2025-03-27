@@ -1,0 +1,23 @@
+(* Lexer para Gramática No. 1 - Expresiones aritméticas simples para variables *)
+
+{
+# Código de encabezado opcional
+import re
+}
+
+let delim = [ \t\n]
+let ws = delim+             
+let letter = [A-Za-z]        
+let digit = [0-9]            
+let id = letter (letter|digit)*   
+
+rule tokens = 
+    ws                      { pass }         
+  | id                      { return 'ID' }   
+  | "+"                     { return 'PLUS' }  
+  | "*"                     { return 'TIMES' } 
+  | "/"                     { return 'DIV' }    # <- Agregado
+  | "-"                     { return 'MINUS' }  # <- Agregado
+  | "("                     { return 'LPAREN' } 
+  | ")"                     { return 'RPAREN' } 
+  | eof                     { return 'EOF' }    # <- Manejo de fin de archivo
