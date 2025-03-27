@@ -1,23 +1,19 @@
 (* Lexer para Gramática No. 1 - Expresiones aritméticas simples para variables *)
 
-{
-# Código de encabezado opcional
-import re
-}
+(* Introducir cualquier header aqui *)
 
-let delim = [ \t\n]
-let ws = delim+             
-let letter = [A-Za-z]        
-let digit = [0-9]            
-let id = letter (letter|digit)*   
+let delim = [' ''\t''\n']
+let ws = delim+
+let letter = ['A'-'Z''a'-'z']
+let digit = ['0'-'9']
+let id = letter(letter|digit)*
 
 rule tokens = 
-    ws                      { pass }         
-  | id                      { return 'ID' }   
-  | "+"                     { return 'PLUS' }  
-  | "*"                     { return 'TIMES' } 
-  | "/"                     { return 'DIV' }    # <- Agregado
-  | "-"                     { return 'MINUS' }  # <- Agregado
-  | "("                     { return 'LPAREN' } 
-  | ")"                     { return 'RPAREN' } 
-  | eof                     { return 'EOF' }    # <- Manejo de fin de archivo
+    ws
+  | id        { return ID }               (* Cambie por una acción válida, que devuelva el token *)
+  | '+'       { return PLUS }
+  | '*'       { return TIMES }
+  | '('       { return LPAREN }
+  | ')'       { return RPAREN }
+
+(* Introducir cualquier trailer aqui *)
