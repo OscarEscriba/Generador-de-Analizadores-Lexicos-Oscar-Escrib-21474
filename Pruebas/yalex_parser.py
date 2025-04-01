@@ -1,6 +1,13 @@
 import re
 from typing import Dict, List, Tuple, Optional
 import sys
+from graphviz import Digraph  # Para generar el árbol de expresión
+
+class ExpressionTreeNode:
+    def __init__(self, value: str, left: Optional['ExpressionTreeNode'] = None, right: Optional['ExpressionTreeNode'] = None):
+        self.value = value
+        self.left = left
+        self.right = right
 
 class YalexParser:
     def __init__(self, debug: bool = True):
@@ -42,24 +49,15 @@ class YalexParser:
         for match in def_matches:
             name, regex = match.groups()
             normalized = self._normalize_regex(regex.strip())
-            print("[DEBUG] Definiciones extraídas:", self.definitions)
             self.definitions[name.strip()] = normalized
 
     def _normalize_regex(self, regex: str) -> str:
-        # Manejar secuencias de escape y literales
         regex = regex.replace(r"'\t'", r'\t')
         regex = regex.replace(r"'\n'", r'\n')
         regex = regex.replace(r"' '", ' ')
-        
-        # Manejar clases de caracteres
         regex = re.sub(r'\[([^\]]+)\]', self._expand_character_class, regex)
-        
-        # Manejar operadores como +, *, |
         regex = regex.replace('+', '*')
-        
-        # Eliminar comillas extras
         regex = regex.replace("'", "")
-        
         return regex
 
     def _expand_character_class(self, match: re.Match) -> str:
@@ -67,13 +65,12 @@ class YalexParser:
         elements = []
         i = 0
         while i < len(chars):
-            if i+2 < len(chars) and chars[i+1] == '-':
+            if i + 2 < len(chars) and chars[i+1] == '-':
                 start, end = chars[i], chars[i+2]
                 elements.append(f"{start}-{end}")
                 i += 3
             else:
-                if chars[i] not in [' ']:
-                    elements.append(re.escape(chars[i]))
+                elements.append(re.escape(chars[i]))
                 i += 1
         return f"[{''.join(elements)}]"
 
@@ -86,7 +83,7 @@ class YalexParser:
             line = line.strip()
             if not line:
                 continue
-                
+
             action = 'None'
             if '{' in line:
                 parts = re.split(r'\s*\{', line, maxsplit=1)
@@ -101,23 +98,17 @@ class YalexParser:
                 'pattern': expanded,
                 'action': action if action != 'None' else None
             })
-            print("[DEBUG] Reglas extraídas:", self.rules)
-
 
     def _expand_pattern(self, pattern: str) -> str:
-        # Manejar definiciones
         definitions_copy = self.definitions.copy()
         
-        # Reemplazar definiciones
         for name, value in sorted(definitions_copy.items(), key=lambda x: len(x[0]), reverse=True):
             if name in pattern:
                 pattern = pattern.replace(name, f"({value})")
         
-        # Manejar literales y caracteres especiales
         if pattern.startswith("'") and pattern.endswith("'"):
             pattern = re.escape(pattern.strip("'"))
         
-        # Agregar anclaje si no está presente
         if not pattern.startswith('^'):
             pattern = '^' + pattern
         
@@ -127,7 +118,6 @@ class YalexParser:
         if not self.rules:
             raise ValueError("No hay reglas para generar el lexer")
         
-        # Ordenar reglas por longitud descendente
         ordered_rules = sorted(self.rules, key=lambda x: len(x['pattern']), reverse=True)
         rules_code = self._generate_rule_definitions(ordered_rules)
         
@@ -144,14 +134,10 @@ class YalexParser:
             action = rule['action']
             
             try:
-                # Validar el patrón de regex
                 re.compile(pattern)
-                
-                # Generar línea de regla
                 if action:
                     rule_lines.append(f"            (r'{pattern}', '{action}')")
                 else:
-                    # Para reglas sin acción (como espacios en blanco)
                     rule_lines.append(f"            (r'{pattern}', None)")
             except re.error as e:
                 print(f"[WARN] Patrón inválido: {pattern} - {e}", file=sys.stderr)
@@ -161,7 +147,6 @@ class YalexParser:
     def _generate_lexer_code(self, rules_code: str) -> str:
         return f"""# -*- coding: utf-8 -*-
 # Lexer generado automáticamente - NO MODIFICAR DIRECTAMENTE
-{self.header}
 
 import re
 from typing import List, Tuple, Optional
@@ -254,11 +239,68 @@ if __name__ == '__main__':
         print("\n[DEBUG] Header:", self.header[:50] + "..." if len(self.header) > 50 else self.header)
         print("[DEBUG] Trailer:", self.trailer[:50] + "..." if len(self.trailer) > 50 else self.trailer)
 
-def main():
+    def generate_and_visualize_global_expression_tree(self) -> None:
+        """
+        Genera y visualiza un único árbol de expresión combinando todas las definiciones del archivo YALex.
+        Cada definición será combinada con el operador '|' para formar una expresión global.
+        """
+        # Combinar todas las expresiones con el operador '|', para formar una expresión global
+        global_regex = '|'.join(self.definitions.values())  # Unir todas las expresiones con '|' (OR)
+        print(f"Generando árbol de expresión global: {global_regex}")
+        
+        # Generar el árbol para la expresión global
+        tree = self.generate_expression_tree(global_regex)  # Generar árbol de la expresión global
+        self.visualize_expression_tree(tree)  # Visualizar el árbol
+
+    def generate_expression_tree(self, regex: str) -> ExpressionTreeNode:
+        """
+        Genera un árbol de expresión a partir de una expresión regular en notación postfix.
+        """
+        stack = []
+        for char in regex:
+            if char in '()*|':
+                # Manejo de operadores: 
+                if char in '|*+':  # En caso de que sea un operador de uno de los lados
+                    right = stack.pop() if char in '|*+' else None
+                    left = stack.pop() if char not in '|*+' else None
+                    node = ExpressionTreeNode(value=char, left=left, right=right)
+                else:  # En caso de que sea un operador binario
+                    node = ExpressionTreeNode(value=char, left=stack.pop(), right=stack.pop())
+                stack.append(node)
+            else:
+                stack.append(ExpressionTreeNode(value=char))
+        
+        return stack[-1] if stack else None
+
+    def visualize_expression_tree(self, root: ExpressionTreeNode) -> None:
+        """
+        Visualiza el árbol de expresión utilizando graphviz.
+        """
+        dot = Digraph(comment='Árbol de Expresión Regular')
+        self._add_nodes(dot, root)
+        dot.render('expression_tree', format='png', view=True)
+
+    def _add_nodes(self, dot: Digraph, node: ExpressionTreeNode, parent=None) -> None:
+        """
+        Agrega los nodos y las conexiones al gráfico recursivamente.
+        """
+        if node:
+            dot.node(str(id(node)), node.value)
+            if parent:
+                dot.edge(str(id(parent)), str(id(node)))
+            if node.left:
+                self._add_nodes(dot, node.left, node)
+            if node.right:
+                self._add_nodes(dot, node.right, node)
+                
+if __name__ == '__main__':
     try:
         parser = YalexParser(debug=True)
         yalex_file = input("Ingrese la ruta del archivo YALex: ").strip()
-        parser.parse_file(yalex_file)
+        parser.parse_file(yalex_file)  # Analiza el archivo YALex
+        
+        # Genera y visualiza el árbol de expresión global
+        parser.generate_and_visualize_global_expression_tree()
         
         output_file = input("Ingrese el archivo de salida [lexer.py]: ").strip()
         output_file = output_file if output_file else 'lexer.py'
@@ -268,5 +310,3 @@ def main():
         print(f"\nError fatal: {str(e)}", file=sys.stderr)
         sys.exit(1)
 
-if __name__ == '__main__':
-    main()
