@@ -165,125 +165,148 @@ class RegexParser:
     
     def parse_atom(self):
         if self.pos >= len(self.input):
-            return RegexNode('CHAR', value='ε')  # Empty string
-        
+            return RegexNode('CHAR', value='ε')  # Retorna nodo vacío si no hay input
+
+        # Paréntesis para agrupación
         if self.input[self.pos] == '(':
             self.pos += 1
             regex = self.parse_regex()
             if self.pos < len(self.input) and self.input[self.pos] == ')':
                 self.pos += 1
             return regex
-        
+
+        # Carácter comodín ANY
         if self.input[self.pos] == '_':
             self.pos += 1
             return RegexNode('CHARCLASS', value='ANY')
-        
+
+        # Clases de caracteres [ ]
         if self.input[self.pos] == '[':
             self.pos += 1
             negate = False
             if self.pos < len(self.input) and self.input[self.pos] == '^':
                 negate = True
                 self.pos += 1
-            
+
             chars = set()
             while self.pos < len(self.input) and self.input[self.pos] != ']':
-                if self.input[self.pos] == '\'':
+                # Manejo de secuencias de escape
+                if self.input[self.pos] == '\\':
                     self.pos += 1
                     if self.pos < len(self.input):
-                        char = self.input[self.pos]
-                        chars.add(char)
+                        escaped_char = self.input[self.pos]
+                        if escaped_char == 't':
+                            chars.add('\t')
+                        elif escaped_char == 'n':
+                            chars.add('\n')
+                        else:
+                            chars.add(escaped_char)
                         self.pos += 1
-                        
-                        # Check for range
-                        if self.pos + 2 < len(self.input) and self.input[self.pos] == '-' and self.input[self.pos+1] == '\'':
-                            self.pos += 2
-                            end_char = self.input[self.pos]
-                            self.pos += 1
-                            for c in range(ord(char), ord(end_char) + 1):
-                                chars.add(chr(c))
-                    
-                    # Skip the closing quote
-                    if self.pos < len(self.input) and self.input[self.pos] == '\'':
-                        self.pos += 1
-                elif self.input[self.pos] == '"':
+                    continue
+
+                # Manejo de rangos
+                start_char = self.input[self.pos]
+                self.pos += 1
+
+                # Verificar si es un rango válido (ej: a-z)
+                if self.pos < len(self.input) and self.input[self.pos] == '-':
                     self.pos += 1
-                    start = self.pos
-                    while self.pos < len(self.input) and self.input[self.pos] != '"':
+                    if self.pos < len(self.input) and self.input[self.pos] != ']':
+                        end_char = self.input[self.pos]
                         self.pos += 1
-                    
-                    if self.pos < len(self.input):
-                        string_chars = self.input[start:self.pos]
-                        for c in string_chars:
-                            chars.add(c)
-                        self.pos += 1
+                        # Añadir todos los caracteres en el rango
+                        for c in range(ord(start_char), ord(end_char) + 1):
+                            chars.add(chr(c))
+                    else:
+                        # Guion al final, tratarlo como carácter normal
+                        chars.add(start_char)
+                        chars.add('-')
                 else:
-                    chars.add(self.input[self.pos])
-                    self.pos += 1
-            
+                    chars.add(start_char)
+
             if self.pos < len(self.input) and self.input[self.pos] == ']':
                 self.pos += 1
-            
+
+            # Procesar negación
+            value = ','.join(sorted(chars))
             if negate:
-                return RegexNode('CHARCLASS', value=f"NOT({','.join(sorted(chars))})")
-            return RegexNode('CHARCLASS', value=','.join(sorted(chars)))
-        
+                return RegexNode('CHARCLASS', value=f"NOT({value})")
+            return RegexNode('CHARCLASS', value=value)
+
+        # Secuencias de escape
+        if self.input[self.pos] == '\\':
+            self.pos += 1
+            if self.pos < len(self.input):
+                escaped_char = self.input[self.pos]
+                # Mapear caracteres especiales
+                if escaped_char == 't':
+                    char = '\t'
+                elif escaped_char == 'n':
+                    char = '\n'
+                elif escaped_char == 'r':
+                    char = '\r'
+                else:
+                    char = escaped_char  # Para otros caracteres escapados
+                self.pos += 1
+                return RegexNode('CHAR', value=char)
+
+        # Caracteres entre comillas simples
         if self.input[self.pos] == '\'':
             self.pos += 1
             if self.pos < len(self.input):
                 char = self.input[self.pos]
                 self.pos += 1
                 if self.pos < len(self.input) and self.input[self.pos] == '\'':
-                    self.pos += 1
+                    self.pos += 1  # Cerrar comilla
                 return RegexNode('CHAR', value=char)
-        
+
+        # Cadenas entre comillas dobles
         if self.input[self.pos] == '"':
             self.pos += 1
             start = self.pos
             while self.pos < len(self.input) and self.input[self.pos] != '"':
                 self.pos += 1
-            
+
             if self.pos < len(self.input):
                 string_chars = self.input[start:self.pos]
-                self.pos += 1
-                
-                if len(string_chars) == 1:
-                    return RegexNode('CHAR', value=string_chars)
-                
-                # Create a concatenation of characters
-                result = RegexNode('CHAR', value=string_chars[0])
-                for i in range(1, len(string_chars)):
-                    char_node = RegexNode('CHAR', value=string_chars[i])
-                    result = RegexNode('CONCAT', left=result, right=char_node)
-                
+                self.pos += 1  # Saltar comilla de cierre
+
+                # Crear concatenación de caracteres
+                if len(string_chars) == 0:
+                    return RegexNode('CHAR', value='ε')
+                    
+                nodes = [RegexNode('CHAR', value=c) for c in string_chars]
+                result = nodes[0]
+                for node in nodes[1:]:
+                    result = RegexNode('CONCAT', left=result, right=node)
                 return result
-        
-        # Check for identifier (corregido para incluir '_' al inicio)
-        if self.input[self.pos].isalpha() or self.input[self.pos] == '_':
+
+        # Referencias a definiciones (ej: let id = ...)
+        if self.input[self.pos].isalnum() or self.input[self.pos] == '_':
             start = self.pos
             while self.pos < len(self.input) and (self.input[self.pos].isalnum() or self.input[self.pos] == '_'):
                 self.pos += 1
 
             ident = self.input[start:self.pos]
             if ident in self.definitions:
-                # Guardar estado actual del parser
+                # Guardar contexto actual
                 saved_pos = self.pos
                 saved_input = self.input
                 
-                # Parsear la definición recursivamente
+                # Parsear recursivamente la definición
                 self.input = self.definitions[ident]
                 self.pos = 0
-                parsed_node = self.parse_regex()  # <--- Debe devolver un RegexNode
+                parsed_node = self.parse_regex()
                 
-                # Restaurar estado
+                # Restaurar contexto
                 self.pos = saved_pos
                 self.input = saved_input
-                return parsed_node  # <--- Asegurar que es un RegexNode
-        
-        # Default to single character
+                return parsed_node
+
+        # Carácter simple por defecto
         char = self.input[self.pos]
         self.pos += 1
         return RegexNode('CHAR', value=char)
-
 class NFAState:
     def __init__(self, state_id):
         self.id = state_id

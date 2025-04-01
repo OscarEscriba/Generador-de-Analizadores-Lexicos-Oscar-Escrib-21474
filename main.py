@@ -1,6 +1,6 @@
 from Parser import LexerGenerator
 # Ruta a tu archivo YALex
-yalex_file = "slr-1.yal"
+yalex_file = "slr-3.yal"
 
 # Crear el generador de lexer
 generator = LexerGenerator(yalex_file)
