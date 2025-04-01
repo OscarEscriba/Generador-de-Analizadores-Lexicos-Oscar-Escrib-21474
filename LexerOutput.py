@@ -23,15 +23,6 @@ class Lexer:
         if self.position >= len(self.input):
             return Token('EOF')
 
-        # Saltar espacios en blanco
-        while self.position < len(self.input) and self.input[self.position].isspace():
-            if self.input[self.position] == '\n':
-                self.line += 1
-                self.column = 1
-            else:
-                self.column += 1
-            self.position += 1
-
         if self.position >= len(self.input):
             return Token('EOF')
 
@@ -39,153 +30,38 @@ class Lexer:
         dfas = [
             {
                 'start': 0,
-                'accept': {6},
+                'accept': {1},
                 'transitions': {
                     0: {
-                        '\\': 1,
                         't': 1,
+                        '\\': 1,
+                        ' ': 1,
                         'n': 1,
-                        ']': 1,
-                        "'": 1,
-                        ' ': 2,
                     },
                     1: {
-                        '\\': 1,
                         't': 1,
-                        'n': 1,
-                        ']': 1,
-                        '\n': 3,
-                        "'": 1,
-                        ' ': 1,
-                    },
-                    2: {
                         '\\': 1,
-                        '-': 4,
-                        'Z': 4,
-                        'A': 4,
-                        't': 1,
-                        'n': 1,
-                        ']': 1,
-                        '\n': 3,
-                        "'": 1,
-                        'z': 4,
                         ' ': 1,
-                        'a': 4,
+                        'n': 1,
                     },
-                    3: {
-                        ' ': 5,
+                },
+                'action': 'return WHITESPACE'
+            },
+            {
+                'start': 0,
+                'accept': {},
+                'transitions': {
+                    0: {
+                        '-': 1,
+                        'a': 1,
+                        'A': 1,
+                        'Z': 1,
+                        'z': 1,
                     },
-                    4: {
-                    },
-                    5: {
-                        ' ': 6,
-                    },
-                    6: {
+                    1: {
                     },
                 },
                 'action': 'return ID'
-            },
-            {
-                'start': 0,
-                'accept': {7, 5, 1, 4},
-                'transitions': {
-                    0: {
-                        '-': 1,
-                        '9': 1,
-                        '0': 1,
-                    },
-                    1: {
-                        '-': 1,
-                        '9': 1,
-                        '.': 2,
-                        '0': 1,
-                        'E': 3,
-                    },
-                    2: {
-                        '-': 4,
-                        '9': 4,
-                        '0': 4,
-                    },
-                    3: {
-                        '-': 5,
-                        '+': 6,
-                        '9': 7,
-                        '0': 7,
-                    },
-                    4: {
-                        '-': 4,
-                        '9': 4,
-                        '0': 4,
-                        'E': 3,
-                    },
-                    5: {
-                        '-': 7,
-                        '9': 7,
-                        '0': 7,
-                    },
-                    6: {
-                        '-': 7,
-                        '9': 7,
-                        '0': 7,
-                    },
-                    7: {
-                        '-': 7,
-                        '9': 7,
-                        '0': 7,
-                    },
-                },
-                'action': 'return NUMBER'
-            },
-            {
-                'start': 0,
-                'accept': {1},
-                'transitions': {
-                    0: {
-                        ';': 1,
-                    },
-                    1: {
-                    },
-                },
-                'action': 'return SEMICOLON'
-            },
-            {
-                'start': 0,
-                'accept': {2},
-                'transitions': {
-                    0: {
-                        ':': 1,
-                    },
-                    1: {
-                        '=': 2,
-                    },
-                    2: {
-                    },
-                },
-                'action': 'return ASSIGNOP'
-            },
-            {
-                'start': 0,
-                'accept': {1},
-                'transitions': {
-                    0: {
-                        '<': 1,
-                    },
-                    1: {
-                    },
-                },
-                'action': 'return LT'
-            },
-            {
-                'start': 0,
-                'accept': {1},
-                'transitions': {
-                    0: {
-                        '=': 1,
-                    },
-                    1: {
-                    },
-                },
-                'action': 'return EQ'
             },
             {
                 'start': 0,
@@ -204,36 +80,12 @@ class Lexer:
                 'accept': {1},
                 'transitions': {
                     0: {
-                        '-': 1,
-                    },
-                    1: {
-                    },
-                },
-                'action': 'return MINUS'
-            },
-            {
-                'start': 0,
-                'accept': {1},
-                'transitions': {
-                    0: {
                         '*': 1,
                     },
                     1: {
                     },
                 },
                 'action': 'return TIMES'
-            },
-            {
-                'start': 0,
-                'accept': {1},
-                'transitions': {
-                    0: {
-                        '/': 1,
-                    },
-                    1: {
-                    },
-                },
-                'action': 'return DIV'
             },
             {
                 'start': 0,
