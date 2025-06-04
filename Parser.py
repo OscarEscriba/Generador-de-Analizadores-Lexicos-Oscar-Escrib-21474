@@ -1,18 +1,18 @@
-import re
 import os
 import sys
 import graphviz
 from collections import defaultdict
 
 class Token:
-    def __init__(self, type, value=None):
+    def __init__(self, type, value=None, position=None):
         self.type = type
         self.value = value
+        self.position = position
     
     def __repr__(self):
         if self.value:
-            return f"{self.type}({self.value})"
-        return f"{self.type}"
+            return f"{self.type}({self.value}) at {self.position}"
+        return f"{self.type} at {self.position}"
 
 class YALexParser:
     def __init__(self, file_path):
@@ -24,56 +24,18 @@ class YALexParser:
         self.trailer = None
     
     def parse(self):
-        # Read the content of the file
         with open(self.file_path, 'r') as file:
             self.content = file.read()
         
-        # Remove comments
-        self.content = re.sub(r'\(\*.*?\*\)', '', self.content, flags=re.DOTALL)
+        self.remove_comments()
+        self.extract_header()
+        self.extract_trailer()
+        self.extract_definitions()
         
-        # Extract header
-        header_match = re.search(r'^\s*{(.*?)}', self.content, re.DOTALL)
-        if header_match:
-            self.header = header_match.group(1).strip()
-            self.content = self.content[header_match.end():].strip()
-        
-        # Extract trailer
-        trailer_match = re.search(r'{(.*?)}$', self.content, re.DOTALL)
-        if trailer_match:
-            self.trailer = trailer_match.group(1).strip()
-            self.content = self.content[:trailer_match.start()].strip()
-        
-        # Extract definitions
-        while True:
-            definition_match = re.search(r'let\s+(\w+)\s*=\s*(.+?)\s*(?=let|\n\s*rule)', self.content, re.DOTALL)
-            if not definition_match:
-                break
-            
-            ident = definition_match.group(1)
-            regexp = definition_match.group(2).strip()
-            self.definitions[ident] = regexp
-            self.content = self.content[:definition_match.start()] + self.content[definition_match.end():]
-        
-        # Extract rules
-        rule_section = re.search(r'rule\s+(\w+)(?:\s*\[\s*(.*?)\s*\])?\s*=\s*(.*?)(?=$)', self.content, re.DOTALL)
+        rule_section = self.extract_rule_section()
         if rule_section:
-            entrypoint = rule_section.group(1)
-            args = rule_section.group(2)
-            rules_text = rule_section.group(3).strip()
-            
-            # Parse individual rules
-            rule_pattern = r'\|\s*(.*?)\s*{\s*(.*?)\s*}|^\s*(.*?)\s*{\s*(.*?)\s*}'
-            rule_matches = re.finditer(rule_pattern, rules_text, re.DOTALL)
-            
-            for match in rule_matches:
-                if match.group(1) is not None:
-                    regexp = match.group(1).strip()
-                    action = match.group(2).strip()
-                else:
-                    regexp = match.group(3).strip()
-                    action = match.group(4).strip()
-                
-                self.rules.append((regexp, action))
+            entrypoint, args, rules_text = rule_section
+            self.extract_rules(rules_text)
             
             return {
                 'header': self.header,
@@ -85,6 +47,159 @@ class YALexParser:
             }
         
         return None
+    
+    def remove_comments(self):
+        result = []
+        i = 0
+        n = len(self.content)
+        
+        while i < n:
+            if i + 1 < n and self.content[i] == '(' and self.content[i+1] == '*':
+                i += 2
+                while i < n and not (self.content[i] == '*' and i+1 < n and self.content[i+1] == ')'):
+                    i += 1
+                i += 2
+            else:
+                result.append(self.content[i])
+                i += 1
+        
+        self.content = ''.join(result)
+    
+    def extract_header(self):
+        i = 0
+        n = len(self.content)
+        
+        while i < n and self.content[i].isspace():
+            i += 1
+        
+        if i < n and self.content[i] == '{':
+            i += 1
+            start = i
+            while i < n and self.content[i] != '}':
+                i += 1
+            
+            if i < n:
+                self.header = self.content[start:i].strip()
+                self.content = self.content[i+1:].strip()
+    
+    def extract_trailer(self):
+        i = len(self.content) - 1
+        
+        while i >= 0 and self.content[i].isspace():
+            i -= 1
+        
+        if i >= 0 and self.content[i] == '}':
+            end = i
+            i -= 1
+            while i >= 0 and self.content[i] != '{':
+                i -= 1
+            
+            if i >= 0:
+                self.trailer = self.content[i+1:end].strip()
+                self.content = self.content[:i].strip()
+    
+    def extract_definitions(self):
+        content = self.content
+        i = 0
+        n = len(content)
+        
+        while i < n:
+            if i + 3 < n and content[i:i+3] == "let" and (i == 0 or content[i-1].isspace()):
+                i += 3
+                while i < n and content[i].isspace():
+                    i += 1
+                
+                start_ident = i
+                while i < n and (content[i].isalnum() or content[i] == '_'):
+                    i += 1
+                ident = content[start_ident:i].strip()
+                
+                while i < n and content[i].isspace():
+                    i += 1
+                
+                if i < n and content[i] == '=':
+                    i += 1
+                    while i < n and content[i].isspace():
+                        i += 1
+                    
+                    start_def = i
+                    while i < n:
+                        if (i + 3 < n and content[i:i+3] == "let" and content[i-1].isspace()) or \
+                           (i + 4 < n and content[i:i+4] == "rule" and content[i-1].isspace()):
+                            break
+                        i += 1
+                    
+                    regexp = content[start_def:i].strip()
+                    self.definitions[ident] = regexp
+            else:
+                i += 1
+        
+        remaining_content = ""
+        i = 0
+        while i < n:
+            if i + 4 < n and content[i:i+4] == "rule" and (i == 0 or content[i-1].isspace()):
+                remaining_content = content[i:]
+                break
+            i += 1
+        
+        self.content = remaining_content
+    
+    def extract_rule_section(self):
+        content = self.content
+        i = 0
+        n = len(content)
+        
+        if i + 4 < n and content[i:i+4] == "rule":
+            i += 4
+            while i < n and content[i].isspace():
+                i += 1
+            
+            start_entry = i
+            while i < n and (content[i].isalnum() or content[i] == '_'):
+                i += 1
+            entrypoint = content[start_entry:i].strip()
+            
+            args = None
+            if i < n and content[i] == '[':
+                i += 1
+                start_args = i
+                while i < n and content[i] != ']':
+                    i += 1
+                if i < n:
+                    args = content[start_args:i].strip()
+                    i += 1
+            
+            while i < n and content[i].isspace():
+                i += 1
+            
+            if i < n and content[i] == '=':
+                i += 1
+                rules_text = content[i:].strip()
+                return entrypoint, args, rules_text
+        
+        return None
+    
+    def extract_rules(self, rules_text):
+        lines = rules_text.split('\n')
+        current_rule = ""
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            if line.startswith(('|', '')) and '{' in line and '}' in line:
+                if line.startswith('|'):
+                    line = line[1:].strip()
+                
+                # Buscar donde empieza la acción
+                brace_start = line.find('{')
+                brace_end = line.find('}')
+                
+                if brace_start != -1 and brace_end != -1:
+                    regexp = line[:brace_start].strip()
+                    action = line[brace_start+1:brace_end].strip()
+                    self.rules.append((regexp, action))
 
 class RegexNode:
     def __init__(self, type, value=None, left=None, right=None):
@@ -94,11 +209,11 @@ class RegexNode:
         self.right = right
     
     def __repr__(self):
-        if self.type == 'CHAR' or self.type == 'RANGE' or self.type == 'CHARCLASS':
+        if self.type in ('CHAR', 'RANGE', 'CHARCLASS'):
             return f"{self.type}({self.value})"
-        elif self.type == 'CONCAT' or self.type == 'UNION' or self.type == 'DIFF':
+        elif self.type in ('CONCAT', 'UNION', 'DIFF'):
             return f"{self.type}({self.left}, {self.right})"
-        else:  # STAR, PLUS, OPTIONAL
+        else:
             return f"{self.type}({self.left})"
 
 class RegexParser:
@@ -106,17 +221,15 @@ class RegexParser:
         self.definitions = definitions or {}
         self.pos = 0
         self.input = ""
-    
+
     def parse(self, regex):
         self.input = regex
         self.pos = 0
         result = self.parse_regex()
-        # asegurarse que el resultado es un RegexNode
         if not isinstance(result, RegexNode):
-            raise ValueError(f"Regex no parseado correctamente: {regex}. Se obtuvo el siguiente resultado: {result}")
+            raise ValueError(f"Invalid regex: {regex}. Result: {result}")
         return result
 
-    
     def parse_regex(self):
         left = self.parse_term()
         if self.pos < len(self.input) and self.input[self.pos] == '|':
@@ -124,28 +237,26 @@ class RegexParser:
             right = self.parse_regex()
             return RegexNode('UNION', left=left, right=right)
         return left
-    
+
     def parse_term(self):
         factors = []
         while self.pos < len(self.input) and self.input[self.pos] not in '|)':
             factors.append(self.parse_factor())
-        
+
         if not factors:
-            return RegexNode('CHAR', value='ε')  # Empty string
-        
+            return RegexNode('CHAR', value='ε')
+
         if len(factors) == 1:
             return factors[0]
-        
-        # Build concatenation tree
+
         result = factors[0]
-        for i in range(1, len(factors)):
-            result = RegexNode('CONCAT', left=result, right=factors[i])
-        
+        for factor in factors[1:]:
+            result = RegexNode('CONCAT', left=result, right=factor)
         return result
-    
+
     def parse_factor(self):
         atom = self.parse_atom()
-        
+
         if self.pos < len(self.input):
             if self.input[self.pos] == '*':
                 self.pos += 1
@@ -156,32 +267,31 @@ class RegexParser:
             elif self.input[self.pos] == '?':
                 self.pos += 1
                 return RegexNode('OPTIONAL', left=atom)
-            elif self.input[self.pos] == '#' and self.pos + 1 < len(self.input):
+            elif self.input[self.pos] == '#':
                 self.pos += 1
                 right = self.parse_factor()
                 return RegexNode('DIFF', left=atom, right=right)
-        
+
         return atom
-    
+
     def parse_atom(self):
         if self.pos >= len(self.input):
-            return RegexNode('CHAR', value='ε')  # Retorna nodo vacío si no hay input
+            return RegexNode('CHAR', value='ε')
 
-        # Paréntesis para agrupación
-        if self.input[self.pos] == '(':
+        char = self.input[self.pos]
+
+        if char == '(':
             self.pos += 1
-            regex = self.parse_regex()
+            node = self.parse_regex()
             if self.pos < len(self.input) and self.input[self.pos] == ')':
                 self.pos += 1
-            return regex
+            return node
 
-        # Carácter comodín ANY
-        if self.input[self.pos] == '_':
+        if char == '_':
             self.pos += 1
             return RegexNode('CHARCLASS', value='ANY')
 
-        # Clases de caracteres [ ]
-        if self.input[self.pos] == '[':
+        if char == '[':
             self.pos += 1
             negate = False
             if self.pos < len(self.input) and self.input[self.pos] == '^':
@@ -190,123 +300,108 @@ class RegexParser:
 
             chars = set()
             while self.pos < len(self.input) and self.input[self.pos] != ']':
-                # Manejo de secuencias de escape
                 if self.input[self.pos] == '\\':
                     self.pos += 1
                     if self.pos < len(self.input):
-                        escaped_char = self.input[self.pos]
-                        if escaped_char == 't':
+                        escaped = self.input[self.pos]
+                        if escaped == 't':
                             chars.add('\t')
-                        elif escaped_char == 'n':
+                        elif escaped == 'n':
                             chars.add('\n')
+                        elif escaped == 's':
+                            chars.add(' ')
                         else:
-                            chars.add(escaped_char)
+                            chars.add(escaped)
                         self.pos += 1
                     continue
 
-                # Manejo de rangos
-                start_char = self.input[self.pos]
+                start = self.input[self.pos]
                 self.pos += 1
 
-                # Verificar si es un rango válido (ej: a-z)
                 if self.pos < len(self.input) and self.input[self.pos] == '-':
                     self.pos += 1
                     if self.pos < len(self.input) and self.input[self.pos] != ']':
-                        end_char = self.input[self.pos]
+                        end = self.input[self.pos]
                         self.pos += 1
-                        # Añadir todos los caracteres en el rango
-                        for c in range(ord(start_char), ord(end_char) + 1):
+                        for c in range(ord(start), ord(end) + 1):
                             chars.add(chr(c))
                     else:
-                        # Guion al final, tratarlo como carácter normal
-                        chars.add(start_char)
+                        chars.add(start)
                         chars.add('-')
                 else:
-                    chars.add(start_char)
+                    chars.add(start)
 
             if self.pos < len(self.input) and self.input[self.pos] == ']':
                 self.pos += 1
 
-            # Procesar negación
-            value = ','.join(sorted(chars))
+            if not chars:
+                return RegexNode('CHAR', value='ε')
+
             if negate:
-                return RegexNode('CHARCLASS', value=f"NOT({value})")
-            return RegexNode('CHARCLASS', value=value)
+                all_chars = set(chr(i) for i in range(32, 127))
+                chars = all_chars - chars
 
-        # Secuencias de escape
-        if self.input[self.pos] == '\\':
+            return RegexNode('CHARCLASS', value=chars)
+
+        if char == "'":
             self.pos += 1
             if self.pos < len(self.input):
-                escaped_char = self.input[self.pos]
-                # Mapear caracteres especiales
-                if escaped_char == 't':
-                    char = '\t'
-                elif escaped_char == 'n':
-                    char = '\n'
-                elif escaped_char == 'r':
-                    char = '\r'
-                else:
-                    char = escaped_char  # Para otros caracteres escapados
+                char_value = self.input[self.pos]
                 self.pos += 1
-                return RegexNode('CHAR', value=char)
+                if self.pos < len(self.input) and self.input[self.pos] == "'":
+                    self.pos += 1
+                return RegexNode('CHAR', value=char_value)
+            return RegexNode('CHAR', value="'")
 
-        # Caracteres entre comillas simples
-        if self.input[self.pos] == '\'':
+        if char == '"':
             self.pos += 1
-            if self.pos < len(self.input):
-                char = self.input[self.pos]
-                self.pos += 1
-                if self.pos < len(self.input) and self.input[self.pos] == '\'':
-                    self.pos += 1  # Cerrar comilla
-                return RegexNode('CHAR', value=char)
-
-        # Cadenas entre comillas dobles
-        if self.input[self.pos] == '"':
-            self.pos += 1
-            start = self.pos
+            chars = []
             while self.pos < len(self.input) and self.input[self.pos] != '"':
+                if self.input[self.pos] == '\\':
+                    self.pos += 1
+                    if self.pos < len(self.input):
+                        escaped = self.input[self.pos]
+                        if escaped == 't':
+                            chars.append('\t')
+                        elif escaped == 'n':
+                            chars.append('\n')
+                        elif escaped == 's':
+                            chars.append(' ')
+                        else:
+                            chars.append(escaped)
+                else:
+                    chars.append(self.input[self.pos])
                 self.pos += 1
-
+            
             if self.pos < len(self.input):
-                string_chars = self.input[start:self.pos]
-                self.pos += 1  # Saltar comilla de cierre
+                self.pos += 1
+            
+            if not chars:
+                return RegexNode('CHAR', value='ε')
+            
+            if len(chars) == 1:
+                return RegexNode('CHAR', value=chars[0])
+            
+            result = RegexNode('CHAR', value=chars[0])
+            for char in chars[1:]:
+                result = RegexNode('CONCAT', left=result, right=RegexNode('CHAR', value=char))
+            return result
 
-                # Crear concatenación de caracteres
-                if len(string_chars) == 0:
-                    return RegexNode('CHAR', value='ε')
-                    
-                nodes = [RegexNode('CHAR', value=c) for c in string_chars]
-                result = nodes[0]
-                for node in nodes[1:]:
-                    result = RegexNode('CONCAT', left=result, right=node)
-                return result
-
-        # Referencias a definiciones (ej: let id = ...)
-        if self.input[self.pos].isalnum() or self.input[self.pos] == '_':
+        if char.isalnum() or char == '_':
             start = self.pos
             while self.pos < len(self.input) and (self.input[self.pos].isalnum() or self.input[self.pos] == '_'):
                 self.pos += 1
 
             ident = self.input[start:self.pos]
             if ident in self.definitions:
-                # Guardar contexto actual
-                saved_pos = self.pos
-                saved_input = self.input
-                
-                # Parsear recursivamente la definición
-                self.input = self.definitions[ident]
-                self.pos = 0
-                parsed_node = self.parse_regex()
-                
-                # Restaurar contexto
-                self.pos = saved_pos
-                self.input = saved_input
-                return parsed_node
+                subparser = RegexParser(self.definitions)
+                return subparser.parse(self.definitions[ident])
+            else:
+                return RegexNode('CHAR', value=ident)
 
-        # Carácter simple por defecto
-        char = self.input[self.pos]
         self.pos += 1
         return RegexNode('CHAR', value=char)
+
 class NFAState:
     def __init__(self, state_id):
         self.id = state_id
@@ -351,7 +446,7 @@ class NFA:
 class NFABuilder:
     def __init__(self):
         self.state_counter = 0
-    
+
     def build_from_regex(self, regex_node):
         nfa = NFA()
         start, end = self._build_node(regex_node, nfa)
@@ -359,112 +454,75 @@ class NFABuilder:
         end.is_accepting = True
         nfa.accept_states.add(end)
         return nfa
-    
+
     def _build_node(self, node, nfa):
         if node.type == 'CHAR':
             start = nfa.create_state()
             end = nfa.create_state()
-            start.add_transition(node.value, end)
+            if node.value != 'ε':
+                start.add_transition(node.value, end)
+            else:
+                start.add_epsilon_transition(end)
             return start, end
-        
+
         elif node.type == 'CONCAT':
-            start_left, end_left = self._build_node(node.left, nfa)
-            start_right, end_right = self._build_node(node.right, nfa)
-            end_left.add_epsilon_transition(start_right)
-            return start_left, end_right
-        
+            left_start, left_end = self._build_node(node.left, nfa)
+            right_start, right_end = self._build_node(node.right, nfa)
+            left_end.add_epsilon_transition(right_start)
+            return left_start, right_end
+
         elif node.type == 'UNION':
             start = nfa.create_state()
             end = nfa.create_state()
-            
-            start_left, end_left = self._build_node(node.left, nfa)
-            start_right, end_right = self._build_node(node.right, nfa)
-            
-            start.add_epsilon_transition(start_left)
-            start.add_epsilon_transition(start_right)
-            end_left.add_epsilon_transition(end)
-            end_right.add_epsilon_transition(end)
-            
+            left_start, left_end = self._build_node(node.left, nfa)
+            right_start, right_end = self._build_node(node.right, nfa)
+            start.add_epsilon_transition(left_start)
+            start.add_epsilon_transition(right_start)
+            left_end.add_epsilon_transition(end)
+            right_end.add_epsilon_transition(end)
             return start, end
-        
+
         elif node.type == 'STAR':
             start = nfa.create_state()
             end = nfa.create_state()
-            
             sub_start, sub_end = self._build_node(node.left, nfa)
-            
             start.add_epsilon_transition(sub_start)
             start.add_epsilon_transition(end)
             sub_end.add_epsilon_transition(sub_start)
             sub_end.add_epsilon_transition(end)
-            
             return start, end
-        
+
         elif node.type == 'PLUS':
             start = nfa.create_state()
             end = nfa.create_state()
-            
             sub_start, sub_end = self._build_node(node.left, nfa)
-            
             start.add_epsilon_transition(sub_start)
             sub_end.add_epsilon_transition(sub_start)
             sub_end.add_epsilon_transition(end)
-            
             return start, end
-        
+
         elif node.type == 'OPTIONAL':
             start = nfa.create_state()
             end = nfa.create_state()
-            
             sub_start, sub_end = self._build_node(node.left, nfa)
-            
             start.add_epsilon_transition(sub_start)
             start.add_epsilon_transition(end)
             sub_end.add_epsilon_transition(end)
-            
             return start, end
-        
+
         elif node.type == 'CHARCLASS':
             start = nfa.create_state()
             end = nfa.create_state()
             
-            if node.value == 'ANY':
-                # Any character (except newline in some implementations)
-                for i in range(256):
+            if isinstance(node.value, set):
+                for char in node.value:
+                    start.add_transition(char, end)
+            elif node.value == 'ANY':
+                for i in range(32, 127):
                     start.add_transition(chr(i), end)
-            elif node.value.startswith('NOT('):
-                # Negated character class
-                chars = node.value[4:-1].split(',')
-                for i in range(256):
-                    char = chr(i)
-                    if char not in chars:
-                        start.add_transition(char, end)
-            else:
-                # Regular character class
-                chars = node.value.split(',')
-                for char in chars:
-                    start.add_transition(char, end)
             
             return start, end
-        
-        elif node.type == 'DIFF':
-            # Character class difference (A - B)
-            # This is a simplified implementation
-            start = nfa.create_state()
-            end = nfa.create_state()
-            
-            # This is a naive implementation and might not handle all cases correctly
-            if node.left.type == 'CHARCLASS' and node.right.type == 'CHARCLASS':
-                left_chars = set(node.left.value.split(','))
-                right_chars = set(node.right.value.split(','))
-                diff_chars = left_chars - right_chars
-                
-                for char in diff_chars:
-                    start.add_transition(char, end)
-            
-            return start, end
-        
-        # Default fallback
+
         start = nfa.create_state()
         end = nfa.create_state()
         start.add_epsilon_transition(end)
@@ -478,7 +536,6 @@ class DFAState:
         self.is_accepting = any(state.is_accepting for state in nfa_states)
         self.token_action = None
         
-        # Find token action from the accepting NFA state
         for state in nfa_states:
             if state.is_accepting and state.token_action:
                 self.token_action = state.token_action
@@ -502,38 +559,29 @@ class NFAToDFAConverter:
         self.alphabet = set()
     
     def convert(self, nfa):
-        # Extraer alfabeto del NFA excluyendo ε
         self.alphabet = set()
         for state in nfa.states:
             for symbol in state.transitions.keys():
-                if symbol != 'ε':  # <--- Filtramos explícitamente ε
+                if symbol != 'ε':
                     self.alphabet.add(symbol)
         
         dfa = DFA()
-        
-        # Cálculo de la clausura-épsilon inicial
         start_closure = nfa.epsilon_closure(nfa.start_state)
-        
-        # Crear estado inicial del DFA
         dfa.start_state = dfa.create_state(start_closure)
         
-        # Lista de estados DFA por procesar
         unprocessed = [dfa.start_state]
         state_map = {frozenset(start_closure): dfa.start_state}
         
-        # Construcción de transiciones DFA
         while unprocessed:
             current = unprocessed.pop(0)
             
-            for symbol in self.alphabet:  # <--- Solo símbolos válidos (sin ε)
+            for symbol in self.alphabet:
                 next_nfa_states = set()
                 
-                # Calcular transiciones para el símbolo actual
                 for nfa_state in current.nfa_states:
                     if symbol in nfa_state.transitions:
                         next_nfa_states.update(nfa_state.transitions[symbol])
                 
-                # Clausura-épsilon de los estados alcanzados
                 epsilon_closure = set()
                 for state in next_nfa_states:
                     epsilon_closure.update(nfa.epsilon_closure(state))
@@ -543,21 +591,12 @@ class NFAToDFAConverter:
                 
                 frozen_closure = frozenset(epsilon_closure)
                 
-                # Crear nuevo estado DFA si no existe
                 if frozen_closure not in state_map:
                     new_state = dfa.create_state(epsilon_closure)
                     state_map[frozen_closure] = new_state
                     unprocessed.append(new_state)
                 
-                # Añadir transición
                 current.transitions[symbol] = state_map[frozen_closure]
-        
-        # Asignar acciones de token a estados de aceptación
-        for dfa_state in dfa.accept_states:
-            for nfa_state in dfa_state.nfa_states:
-                if nfa_state.is_accepting and nfa_state.token_action:
-                    dfa_state.token_action = nfa_state.token_action
-                    break
         
         return dfa
 
@@ -573,27 +612,23 @@ class RegexVisualizer:
     
     def _build_graph(self, dot, node):
         if not node:
-            return
+            return None
         
         node_id = f"node_{self.counter}"
         self.counter += 1
         
-        if node.type == 'CHAR' or node.type == 'RANGE' or node.type == 'CHARCLASS':
-            label = f"{node.type}\\n{node.value}"
-            dot.node(node_id, label)
-        elif node.type == 'CONCAT' or node.type == 'UNION' or node.type == 'DIFF':
+        if node.type in ('CHAR', 'RANGE', 'CHARCLASS'):
+            dot.node(node_id, f"{node.type}\\n{node.value}")
+        elif node.type in ('CONCAT', 'UNION', 'DIFF'):
             dot.node(node_id, node.type)
-            
             left_id = self._build_graph(dot, node.left)
             right_id = self._build_graph(dot, node.right)
-            
             if left_id:
                 dot.edge(node_id, left_id)
             if right_id:
                 dot.edge(node_id, right_id)
-        else:  # STAR, PLUS, OPTIONAL
+        else:
             dot.node(node_id, node.type)
-            
             child_id = self._build_graph(dot, node.left)
             if child_id:
                 dot.edge(node_id, child_id)
@@ -604,25 +639,20 @@ class NFAVisualizer:
     def visualize(self, nfa, name="nfa"):
         dot = graphviz.Digraph(name)
         
-        # Add states
         for state in nfa.states:
             if state.is_accepting:
                 dot.node(str(state.id), shape="doublecircle")
             else:
                 dot.node(str(state.id), shape="circle")
             
-            # Add transitions (corregir caracteres especiales)
             for symbol, destinations in state.transitions.items():
-                # Escapar caracteres especiales: \ -> \\, " -> \", | -> \|
-                escaped_symbol = symbol.replace('\\', '\\\\').replace('"', '\\"').replace('|', '\\|')
+                escaped = symbol.replace('\\', '\\\\').replace('"', '\\"')
                 for dest in destinations:
-                    dot.edge(str(state.id), str(dest.id), label=escaped_symbol)
+                    dot.edge(str(state.id), str(dest.id), label=escaped)
             
-            # Add epsilon transitions (manejar ε)
             for dest in state.epsilon_transitions:
                 dot.edge(str(state.id), str(dest.id), label="ε")
         
-        # Mark start state
         if nfa.start_state:
             dot.node("start", shape="point")
             dot.edge("start", str(nfa.start_state.id))
@@ -633,7 +663,6 @@ class DFAVisualizer:
     def visualize(self, dfa, name="dfa"):
         dot = graphviz.Digraph(name)
         
-        # Add states
         for state in dfa.states:
             label = f"{state.id}"
             if state.token_action:
@@ -644,11 +673,10 @@ class DFAVisualizer:
             else:
                 dot.node(str(state.id), label=label, shape="circle")
             
-            # Add transitions
             for symbol, dest in state.transitions.items():
-                dot.edge(str(state.id), str(dest.id), label=symbol)
+                escaped_symbol = symbol.replace('\\', '\\\\').replace('"', '\\"')
+                dot.edge(str(state.id), str(dest.id), label=escaped_symbol)
         
-        # Mark start state
         if dfa.start_state:
             dot.node("start", shape="point")
             dot.edge("start", str(dfa.start_state.id))
@@ -659,66 +687,67 @@ class LexerGenerator:
     def __init__(self, yalex_file):
         self.yalex_file = yalex_file
         self.yalex_data = None
-        self.lexer_name = "lexer"
         self.regex_trees = []
         self.nfas = []
         self.dfas = []
         self.nfa_builder = NFABuilder()
-    
+
     def parse_yalex(self):
         parser = YALexParser(self.yalex_file)
         self.yalex_data = parser.parse()
         if not self.yalex_data:
             raise ValueError("Failed to parse YALex file")
-        
         return self.yalex_data
-    
+
     def build_regex_trees(self):
         if not self.yalex_data:
             raise ValueError("YALex file not parsed yet")
-        
+
         regex_parser = RegexParser(self.yalex_data['definitions'])
         self.regex_trees = []
-        
+
         for regexp, action in self.yalex_data['rules']:
             try:
                 regex_tree = regex_parser.parse(regexp)
                 self.regex_trees.append((regex_tree, action))
+                print(f"Successfully parsed rule: '{regexp}' -> {action}")
             except Exception as e:
-                print(f"Error al parsear la regla: '{regexp}'. Acción: {action}")
+                print(f"Error parsing rule: '{regexp}'. Action: {action}. Error: {e}")
                 raise e
-        
+
         return self.regex_trees
-    
+
     def build_nfas(self):
         if not self.regex_trees:
             raise ValueError("Regex trees not built yet")
-        
+
         self.nfas = []
         for regex_tree, action in self.regex_trees:
-            nfa = self.nfa_builder.build_from_regex(regex_tree)  # Usar self.nfa_builder
+            nfa = self.nfa_builder.build_from_regex(regex_tree)
             for state in nfa.accept_states:
                 state.token_action = action
+                state.is_accepting = True
             self.nfas.append(nfa)
         return self.nfas
-    
+
     def build_dfas(self):
         if not self.nfas:
             raise ValueError("NFAs not built yet")
-        
+
         converter = NFAToDFAConverter()
         self.dfas = []
-        
-        for regex_tree, _ in self.regex_trees:
-            nfa = self.nfa_builder.build_from_regex(regex_tree)  # Acceso correcto
+
+        for nfa in self.nfas:
             dfa = converter.convert(nfa)
+            for state in dfa.accept_states:
+                for nfa_state in state.nfa_states:
+                    if nfa_state.is_accepting and nfa_state.token_action:
+                        state.token_action = nfa_state.token_action
+                        break
             self.dfas.append(dfa)
         return self.dfas
     
     def visualize_regex_trees(self, output_dir="output"):
-        if not self.regex_trees:
-            raise ValueError("Regex trees not built yet")
-        
         os.makedirs(output_dir, exist_ok=True)
         visualizer = RegexVisualizer()
         
@@ -727,9 +756,6 @@ class LexerGenerator:
             dot.render(f"{output_dir}/regex_tree_{i}", format="png", cleanup=True)
     
     def visualize_nfas(self, output_dir="output"):
-        if not self.nfas:
-            raise ValueError("NFAs not built yet")
-        
         os.makedirs(output_dir, exist_ok=True)
         visualizer = NFAVisualizer()
         
@@ -738,9 +764,6 @@ class LexerGenerator:
             dot.render(f"{output_dir}/nfa_{i}", format="png", cleanup=True)
     
     def visualize_dfas(self, output_dir="output"):
-        if not self.dfas:
-            raise ValueError("DFAs not built yet")
-        
         os.makedirs(output_dir, exist_ok=True)
         visualizer = DFAVisualizer()
         
@@ -748,35 +771,20 @@ class LexerGenerator:
             dot = visualizer.visualize(dfa, f"dfa_{i}")
             dot.render(f"{output_dir}/dfa_{i}", format="png", cleanup=True)
     
-    def generate_combined_dfa(self):
-        if not self.dfas:
-            raise ValueError("DFAs not built yet")
-        
-        # This is a simplified approach to combine DFAs
-        # A proper implementation would build a single DFA from all regex patterns
-        
-        # For now, we'll just use the DFAs as they are
-        return self.dfas
-    
     def generate_lexer(self, output_file=None):
-        if not self.yalex_data:
-            raise ValueError("YALex file not parsed yet")
-        
         if not output_file:
             output_file = os.path.splitext(self.yalex_file)[0] + ".py"
         
+        self.parse_yalex()
         self.build_regex_trees()
         self.build_nfas()
         self.build_dfas()
         
         with open(output_file, 'w', encoding='utf-8') as f:
-            # Escribir el encabezado
-            f.write("# Generated Lexer from YALex file\n")
             if self.yalex_data['header']:
                 f.write(f"{self.yalex_data['header']}\n\n")
             
-            # Escribir imports y clase Token
-            f.write("import re\n\n")
+            f.write("from collections import defaultdict\n\n")
             f.write("class Token:\n")
             f.write("    def __init__(self, type, value=None, position=None):\n")
             f.write("        self.type = type\n")
@@ -784,86 +792,159 @@ class LexerGenerator:
             f.write("        self.position = position\n\n")
             f.write("    def __repr__(self):\n")
             f.write("        if self.value:\n")
-            f.write("            return f\"{self.type}({self.value})\"\n")
-            f.write("        return f\"{self.type}\"\n\n")
+            f.write("            return f\"{self.type}({self.value}) at {self.position}\"\n")
+            f.write("        return f\"{self.type} at {self.position}\"\n\n")
             
-            # Escribir clase Lexer
             f.write("class Lexer:\n")
             f.write("    def __init__(self, input_text):\n")
             f.write("        self.input = input_text\n")
             f.write("        self.position = 0\n")
             f.write("        self.line = 1\n")
-            f.write("        self.column = 1\n\n")
+            f.write("        self.column = 1\n")
             
-            # Método next_token
-            f.write("    def next_token(self):\n")
-            f.write("        if self.position >= len(self.input):\n")
-            f.write("            return Token('EOF')\n\n")
-            #f.write("        # Saltar espacios en blanco\n")
-            #f.write("        while self.position < len(self.input) and self.input[self.position].isspace():\n")
-            #.write("            if self.input[self.position] == '\\n':\n")
-            #f.write("                self.line += 1\n")
-            #f.write("                self.column = 1\n")
-            #f.write("            else:\n")
-            #f.write("                self.column += 1\n")
-            #f.write("            self.position += 1\n\n")
-            f.write("        if self.position >= len(self.input):\n")
-            f.write("            return Token('EOF')\n\n")
-            
-            # Lista de DFAs
-            f.write("        # Lista de DFAs (cada uno representa una regla)\n")
-            f.write("        dfas = [\n")
-            for dfa, (_, action) in zip(self.dfas, self.yalex_data['rules']):
-                f.write("            {\n")
-                f.write(f"                'start': {dfa.start_state.id},\n")
-                f.write(f"                'accept': {{{', '.join(str(s.id) for s in dfa.accept_states)}}},\n")
-                f.write("                'transitions': {\n")
+            # Write the DFA transitions
+            f.write("\n        # DFA transitions\n")
+            f.write("        self.dfas = []\n")
+            for i, dfa in enumerate(self.dfas):
+                f.write(f"        # DFA {i}\n")
+                f.write(f"        dfa_{i}_states = []\n")
+                f.write(f"        dfa_{i}_transitions = []\n")
+                
                 for state in dfa.states:
-                    f.write(f"                    {state.id}: {{\n")
+                    f.write(f"        # State {state.id}\n")
+                    transitions = defaultdict(list)
                     for symbol, dest in state.transitions.items():
-                        f.write(f"                        {repr(symbol)}: {dest.id},\n")
-                    f.write("                    },\n")
-                f.write("                },\n")
-                f.write(f"                'action': {repr(action)}\n")  # Acción desde YALex
-                f.write("            },\n")
+                        # Handle special characters properly
+                        if symbol == '\n':
+                            symbol_repr = "'\\n'"
+                        elif symbol == '\t':
+                            symbol_repr = "'\\t'"
+                        elif symbol == ' ':
+                            symbol_repr = "' '"
+                        elif symbol == "'":
+                            symbol_repr = '"\'"'
+                        elif symbol == '"':
+                            symbol_repr = "'\"'"
+                        elif symbol == '\\':
+                            symbol_repr = "'\\\\'"
+                        else:
+                            symbol_repr = f"'{symbol}'"
+                        transitions[dest.id].append(symbol_repr)
+                    
+                    transition_code = []
+                    for dest_id, symbols in transitions.items():
+                        transition_code.append(f"({dest_id}, {{{', '.join(symbols)}}})")
+                    
+                    transition_str = ', '.join(transition_code)
+                    f.write(f"        dfa_{i}_transitions.append([{transition_str}])\n")
+                    f.write(f"        dfa_{i}_states.append({'True' if state.is_accepting else 'False'})\n")
+                
+                f.write(f"        self.dfas.append((dfa_{i}_states, dfa_{i}_transitions))\n\n")
+            
+            # Write the actions
+            f.write("        # Token actions\n")
+            f.write("        self.actions = [\n")
+            for _, action in self.yalex_data['rules']:
+                # Extract just the return value without 'return '
+                action_value = action.split('return ')[1].strip() if 'return' in action else action
+                f.write(f"            '{action_value}',\n")
             f.write("        ]\n\n")
             
-            # Lógica de coincidencia de tokens
+            # Write the next_token method
+            f.write("    def next_token(self):\n")
+            f.write("        if self.position >= len(self.input):\n")
+            f.write("            return Token('EOF', position=(self.line, self.column))\n\n")
+            
+            f.write("        # Skip whitespace (but we actually tokenize it in this case)\n")
+            f.write("        # while self.position < len(self.input) and self.input[self.position].isspace():\n")
+            f.write("        #     if self.input[self.position] == '\\n':\n")
+            f.write("        #         self.line += 1\n")
+            f.write("        #         self.column = 1\n")
+            f.write("        #     else:\n")
+            f.write("        #         self.column += 1\n")
+            f.write("        #     self.position += 1\n\n")
+            
+            f.write("        if self.position >= len(self.input):\n")
+            f.write("            return Token('EOF', position=(self.line, self.column))\n\n")
+            
             f.write("        longest_match = None\n")
             f.write("        longest_length = 0\n")
-            f.write("        token_type = None\n")
-            f.write("        current_line = self.line\n")
-            f.write("        current_column = self.column\n\n")
-            f.write("        for dfa_info in dfas:\n")
-            f.write("            current_state = dfa_info['start']\n")
-            f.write("            current_length = 0\n")
-            f.write("            temp_pos = self.position\n")
-            f.write("            while temp_pos < len(self.input):\n")
-            f.write("                char = self.input[temp_pos]\n")
-            f.write("                transitions = dfa_info['transitions'].get(current_state, {})\n")
-            f.write("                if char in transitions:\n")
-            f.write("                    current_state = transitions[char]\n")
-            f.write("                    current_length += 1\n")
-            f.write("                    temp_pos += 1\n")
-            f.write("                else:\n")
-            f.write("                    break\n")
-            f.write("            if current_state in dfa_info['accept']:\n")
-            f.write("                if current_length > longest_length:\n")
-            f.write("                    longest_length = current_length\n")
-            f.write("                    token_type = dfa_info['action']\n\n")
-            f.write("        if longest_length > 0:\n")
-            f.write("            value = self.input[self.position:self.position + longest_length]\n")
-            f.write("            self.position += longest_length\n")
-            f.write("            self.column += longest_length\n")
-            f.write("            return Token(token_type, value, (current_line, current_column))\n")
-            f.write("        else:\n")
-            f.write("            char = self.input[self.position]\n")
-            f.write("            self.position += 1\n")
-            f.write("            self.column += 1\n")
-            f.write("            return Token('ERROR', char, (current_line, current_column))\n\n")
+            f.write("        matching_action = None\n\n")
             
-            # Trailer
+            f.write("        # Try each DFA to find the longest match\n")
+            f.write("        for i, (states, transitions) in enumerate(self.dfas):\n")
+            f.write("            current_state = 0  # Start state\n")
+            f.write("            current_length = 0\n")
+            f.write("            last_accepting_state = None\n")
+            f.write("            last_accepting_length = 0\n\n")
+            
+            f.write("            for j in range(self.position, len(self.input)):\n")
+            f.write("                char = self.input[j]\n")
+            f.write("                found = False\n")
+            f.write("                for dest, symbols in transitions[current_state]:\n")
+            f.write("                    if char in symbols:\n")
+            f.write("                        current_state = dest\n")
+            f.write("                        current_length += 1\n")
+            f.write("                        found = True\n")
+            f.write("                        if states[current_state]:\n")
+            f.write("                            last_accepting_state = current_state\n")
+            f.write("                            last_accepting_length = current_length\n")
+            f.write("                        break\n")
+            f.write("                if not found:\n")
+            f.write("                    break\n\n")
+            
+            f.write("            # Use the last accepting state if we couldn't consume all characters\n")
+            f.write("            if last_accepting_state is not None and last_accepting_length > longest_length:\n")
+            f.write("                longest_match = self.input[self.position:self.position + last_accepting_length]\n")
+            f.write("                longest_length = last_accepting_length\n")
+            f.write("                matching_action = self.actions[i]\n\n")
+            
+            f.write("        if longest_match is not None:\n")
+            f.write("            token_type = matching_action\n")
+            f.write("            start_pos = (self.line, self.column)\n")
+            f.write("            \n")
+            f.write("            # Update position\n")
+            f.write("            for char in longest_match:\n")
+            f.write("                if char == '\\n':\n")
+            f.write("                    self.line += 1\n")
+            f.write("                    self.column = 1\n")
+            f.write("                else:\n")
+            f.write("                    self.column += 1\n")
+            f.write("            \n")
+            f.write("            self.position += longest_length\n")
+            f.write("            end_pos = (self.line, self.column)\n")
+            f.write("            \n")
+            f.write("            return Token(token_type, longest_match, (start_pos, end_pos))\n")
+            f.write("        \n")
+            f.write("        # No match found - return error token\n")
+            f.write("        error_char = self.input[self.position]\n")
+            f.write("        error_pos = (self.line, self.column)\n")
+            f.write("        self.position += 1\n")
+            f.write("        self.column += 1\n")
+            f.write("        return Token('ERROR', error_char, error_pos)\n\n")
+            
+            f.write("    def tokenize(self):\n")
+            f.write("        tokens = []\n")
+            f.write("        while True:\n")
+            f.write("            token = self.next_token()\n")
+            f.write("            tokens.append(token)\n")
+            f.write("            if token.type == 'EOF':\n")
+            f.write("                break\n")
+            f.write("        return tokens\n")
+            
             if self.yalex_data['trailer']:
-                f.write("\n# Trailer\n")
-                f.write(self.yalex_data['trailer'])
-                f.write("\n")
+                f.write(f"\n{self.yalex_data['trailer']}\n")
+        
+        print(f"Lexer generated successfully at {output_file}")
+
+# Example usage
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python yalex_generator.py <input.yal> [output.py]")
+        sys.exit(1)
+    
+    input_file = sys.argv[1]
+    output_file = sys.argv[2] if len(sys.argv) > 2 else None
+    
+    generator = LexerGenerator(input_file)
+    generator.generate_lexer(output_file)
